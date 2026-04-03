@@ -49,10 +49,10 @@ dino:
   koleo_loss_weight: 0.1
 ibot:
   loss_weight: 1.0
-  mask_sample_probability: 0.5
+  mask_sample_probability: 1.0
   mask_ratio_min_max:
-  - 0.1
-  - 0.5
+  - 0.4
+  - 0.6
   separate_head: false
   head_n_prototypes: 65536
   head_bottleneck_dim: 256
@@ -70,7 +70,7 @@ train:
   centering: "centering" # or "sinkhorn_knopp"
 student:
   arch: vit_large
-  patch_size: 4
+  patch_size: 16
   drop_path_rate: 0.3
   layerscale: 1.0e-05
   drop_path_uniform: true
@@ -84,10 +84,10 @@ student:
   interpolate_antialias: false
   interpolate_offset: 0.1
 teacher:
-  momentum_teacher: 0.992
+  momentum_teacher: 0.996
   final_momentum_teacher: 1
-  warmup_teacher_temp: 0.04
-  teacher_temp: 0.07
+  warmup_teacher_temp: 0.02
+  teacher_temp: 0.02
   warmup_teacher_temp_epochs: 30
 optim:
   epochs: 100

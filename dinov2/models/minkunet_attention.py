@@ -46,9 +46,10 @@ class MinkUNetSparseAttention(nn.Module):
                  **kwargs,):
         super().__init__()
 
-        assert patch_factor in (1, 2, 4)
+        #  assert patch_factor in (1, 2, 4)
         self.mask_token = nn.Parameter(torch.zeros(1, 64))
         self.patch_factor = patch_factor
+        #  self.test_conv = ConvBlock2D(1, 64, kernel_size=1, stride=1)  # [B,1,500,500] → [B,64,500,500]
         # ---- Initial convolution (full resolution feature extraction) ----
         self.conv0 = ConvBlock2D(1, 32, kernel_size=3, stride=1)  # [B,1,500,500] → [B,32,500,500]
 
@@ -80,11 +81,12 @@ class MinkUNetSparseAttention(nn.Module):
         self.final = SparseConv2d(64, 64, kernel_size=1, bias=True)  # Feature refinement
 
         # DINO heads
-        self.patch_head = nn.LayerNorm(64, eps=1e-6)
+        #  self.patch_head = nn.LayerNorm(64, eps=1e-6)
+        self.patch_head = nn.Identity()
         self.cls_head = nn.Sequential(
             #  nn.AdaptiveAvgPool2d(1),
             nn.Flatten(),
-            nn.LayerNorm(64, eps=1e-6)
+            #  nn.LayerNorm(64, eps=1e-6)
         )
 
     def prepare_tokens_with_masks(self, x, masks=None):
@@ -94,7 +96,7 @@ class MinkUNetSparseAttention(nn.Module):
             pixel_mask = masks.view(B, 1, grid_w, grid_h) \
                            .repeat_interleave(self.patch_factor, dim=2) \
                            .repeat_interleave(self.patch_factor, dim=3)
-            x = x.masked_fill(pixel_mask, 0.0)
+            x = x.masked_fill(~pixel_mask, 0.0)
             return x
 
         return x
@@ -131,12 +133,46 @@ class MinkUNetSparseAttention(nn.Module):
 
         # ============ BOTTLENECK (Sparse Attention at 125×125) ============
         out = self.bottleneck(out)              # [B,64,125,125] -> [B,128,125,125] (attention) -> [B,64,125,125]
-        #  with torch.no_grad():
-        #      d_out = out.to_dense(channel_dim=1, spatial_shape=ds_img_size).permute(0, 2, 3, 1) # [B,64,125,125] dense tensor
-        #      mask = (d_out.abs().sum(dim=-1) > 0)
-        #      print("Shape : ", mask.shape)
-        #      active_ratio = mask.float().mean()
-        #      print("Active ratio:", active_ratio.item())
+        if self.patch_factor == 4:
+            d_out = out.to_dense(channel_dim=1, spatial_shape=ds_img_size).permute(0, 2, 3, 1) # [B,64,125,125] dense tensor
+            B, Hp, Wp, D = d_out.shape
+            if B < orig_batch_size:
+                pad_tensor_patch = torch.zeros(orig_batch_size-B, Hp, Wp, D, device=d_out.device, dtype=d_out.dtype)
+                d_out = torch.cat([d_out, pad_tensor_patch], dim=0)
+            patches = d_out.reshape(orig_batch_size, Hp * Wp, D)
+            dino_dict["x_norm_patchtokens"] = self.patch_head(patches)
+        # ============ DECODER ============
+
+        # Stage 1: 125×125 to 250×250
+        out = self.convtr5(out, out_b1p2)       # Upsample, guided by skip geometry
+        out = cat(out, out_b1p2)                # [B,64,250,250] + [B,32,250,250] = [B,96,250,250]
+        out = self.block6(out)                  # Process to [B,64,250,250]
+        if self.patch_factor == 2:
+            d_out = out.to_dense(channel_dim=1, spatial_shape=ds_img_size).permute(0, 2, 3, 1) # [B,64,250,250] dense tensor
+            B, Hp, Wp, D = d_out.shape
+            if B < orig_batch_size:
+                pad_tensor_patch = torch.zeros(orig_batch_size-B, Hp, Wp, D, device=d_out.device, dtype=d_out.dtype)
+                d_out = torch.cat([d_out, pad_tensor_patch], dim=0)
+            patches = d_out.reshape(orig_batch_size, Hp * Wp, D)
+            dino_dict["x_norm_patchtokens"] = self.patch_head(patches)
+
+        # Stage 2: 250×250 to 500×500 (full resolution)run
+        out = self.convtr7(out, out_p1)         # Upsample
+        out = cat(out, out_p1)                  # [B,64,500,500] + [B,32,500,500] = [B,96,500,500]
+        out = self.block8(out)                  # Process to [B,64,500,500]
+
+        # ============ FINAL PROJECTION + HEAD ============
+        out = self.final(out)                   # Feature refinement [B,64,500,500]
+
+        if self.patch_factor == 1:
+            d_out = out.to_dense(channel_dim=1, spatial_shape=ds_img_size).permute(0, 2, 3, 1) # [B,64,500,500] dense tensor
+            B, Hp, Wp, D = d_out.shape
+            if B < orig_batch_size:
+                pad_tensor_patch = torch.zeros(orig_batch_size-B, Hp, Wp, D, device=d_out.device, dtype=d_out.dtype)
+                d_out = torch.cat([d_out, pad_tensor_patch], dim=0)
+            patches = d_out.reshape(orig_batch_size, Hp * Wp, D)
+            dino_dict["x_norm_patchtokens"] = self.patch_head(patches)
+
         # Convert to dense for classification
         pooled_out = global_pool(out, reduce='mean')
         out_feat = pooled_out.features
@@ -148,44 +184,7 @@ class MinkUNetSparseAttention(nn.Module):
             pad_tensor_cls = torch.zeros(orig_batch_size-B_cls, D_cls, device=out_cls.device, dtype=out_cls.dtype)
             out_cls = torch.cat([out_cls, pad_tensor_cls], dim=0)
         dino_dict["x_norm_clstoken"] = out_cls
-        if self.patch_factor == 4:
-            d_out = out.to_dense(channel_dim=1, spatial_shape=ds_img_size).permute(0, 2, 3, 1) # [B,64,125,125] dense tensor
-            B, Hp, Wp, D = d_out.shape
-            if B < orig_batch_size:
-                pad_tensor = torch.zeros(orig_batch_size-B, Hp, Wp, D, device=d_out.device, dtype=d_out.dtype)
-                d_out = torch.cat([d_out, pad_tensor], dim=0)
-            #  print("Batch from Sparse->Dense : ", B)
-            #  print("Unique Batch indices : ", out.coords[:, 0].unique())
-            #  print("Batch from Sparse : ", out.features.shape)
-            #  print("Offsets Shape : ", out.offsets.shape)
-            #  print("Offsets : ", out.offsets)
-            patches = d_out.reshape(orig_batch_size, Hp * Wp, D)
-            dino_dict["x_norm_patchtokens"] = self.patch_head(patches)
-        #  # ============ DECODER ============
-        #
-        #  # Stage 1: 125×125 to 250×250
-        #  out = self.convtr5(out, out_b1p2)       # Upsample, guided by skip geometry
-        #  out = cat(out, out_b1p2)                # [B,64,250,250] + [B,32,250,250] = [B,96,250,250]
-        #  out = self.block6(out)                  # Process to [B,64,250,250]
-        #  if self.patch_factor == 2:
-        #      d_out = out.to_dense(channel_dim=1, spatial_shape=ds_img_size).permute(0, 2, 3, 1) # [B,64,250,250] dense tensor
-        #      B, Hp, Wp, D = d_out.shape
-        #      patches = d_out.reshape(B, Hp * Wp, D)
-        #      dino_dict["x_norm_patchtokens"] = self.patch_head(patches)
-        #
-        #  # Stage 2: 250×250 to 500×500 (full resolution)run
-        #  out = self.convtr7(out, out_p1)         # Upsample
-        #  out = cat(out, out_p1)                  # [B,64,500,500] + [B,32,500,500] = [B,96,500,500]
-        #  out = self.block8(out)                  # Process to [B,64,500,500]
-        #
-        #  # ============ FINAL PROJECTION + HEAD ============
-        #  out = self.final(out)                   # Feature refinement [B,64,500,500]
-        #
-        #  if self.patch_factor == 1:
-        #      d_out = out.to_dense(channel_dim=1, spatial_shape=ds_img_size).permute(0, 2, 3, 1) # [B,64,500,500] dense tensor
-        #      B, Hp, Wp, D = d_out.shape
-        #      patches = d_out.reshape(B, Hp * Wp, D)
-        #      dino_dict["x_norm_patchtokens"] = self.patch_head(patches)
+
         if is_training:
             return dino_dict
         else:
@@ -206,7 +205,7 @@ class MinkUNetSparseAttention(nn.Module):
 
 class MinkUNetSparseAttention125(MinkUNetSparseAttention):
     def __init__(self, *args, **kwargs):
-        super().__init__(*args, spatial_encoding=True, flash_attention=True, encoding_range=125.0, **kwargs)
+        super().__init__(*args, spatial_encoding=True, flash_attention=True, encoding_range=25.0, **kwargs)
 
 class MinkUNetSparseAttentionNoEnc(MinkUNetSparseAttention):
     def __init__(self, *args, **kwargs):

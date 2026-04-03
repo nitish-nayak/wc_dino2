@@ -66,18 +66,31 @@ class DINOLoss(nn.Module):
         """
         # TODO: Use cross_entropy_distribution here
         total_loss = 0
+        total_t_entropy = 0
+        total_s_entropy = 0
+        total_kl_t = 0
+        total_kl_s = 0
         for s in student_output_list:
             lsm = F.log_softmax(s / self.student_temp, dim=-1)
+            sm = F.softmax(s / self.student_temp, dim=-1)
             for t in teacher_out_softmaxed_centered_list:
                 loss = torch.sum(t * lsm, dim=-1)
-                if math.isnan(loss.mean()):
-                    print("CLSTokenLoss\n=====================")
-                    print("Teacher path tokens : ", t)
-                    print("Student path tokens : ", s)
-                    print("Misc : ", self.student_temp, self.center, self.updated)
-                    print("=====================")
+                logt = torch.log(t.detach())
+                t_entropy = -(logt * t).sum(dim=-1)
+                kl_t = (-loss - t_entropy)
+                s_entropy = -(lsm * sm).sum(dim=-1)
+                kl_s = (-loss - s_entropy)
+
                 total_loss -= loss.mean()
-        return total_loss
+                total_t_entropy += t_entropy.mean()
+                total_s_entropy += s_entropy.mean()
+                total_kl_t += kl_t.mean()
+                total_kl_s += kl_s.mean()
+        return {"total_loss" : total_loss,
+                "cls_t_entropy" : total_t_entropy,
+                "cls_s_entropy" : total_s_entropy,
+                "cls_kl_t" : total_kl_t,
+                "cls_kl_s" : total_kl_s}
 
     @torch.no_grad()
     def update_center(self, teacher_output):

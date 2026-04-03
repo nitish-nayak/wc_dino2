@@ -48,6 +48,7 @@ class ConvTrBlock2D(nn.Module):
             in_ch, out_ch, kernel_size=kernel_size, stride=stride,
             transposed=True, bias=bias
         )
+        #  self.norm = LayerNorm(out_ch)
         self.norm_act = Sequential(
             nn.BatchNorm1d(out_ch),
             ReLU(inplace=True),
@@ -56,6 +57,8 @@ class ConvTrBlock2D(nn.Module):
     def forward(self, x_sparse: Voxels, out_spatial_sparsity: Voxels) -> Voxels:
         # Perform sparse transposed convolution guided by the skip tensor geometry
         y = self.deconv(x_sparse, out_spatial_sparsity)
+        #  y = self.norm(y)
+        #  return y
         return self.norm_act(y)
 
 # ---------------------------------------------------------------------------
@@ -136,6 +139,8 @@ class BottleneckSparseAttention2D(nn.Module):
         # with not batchNorm?
         self.norm1 = LayerNorm(attn_channels)
         self.norm2 = LayerNorm(attn_channels)
+        self.norm3 = LayerNorm(channels)
+        self.norm4 = LayerNorm(channels)
 
         # Sparse attention over features (positional encoding is 2D-safe)
         # this uses custom modules in attention2D.py
@@ -164,17 +169,19 @@ class BottleneckSparseAttention2D(nn.Module):
 
     def forward(self, x: Geometry) -> Geometry:
 
+        #  x = self.norm4(x)
         x2 = self.pre_proj(x)
 
-        # Geometry in/out 
+        # Geometry in/out
         x2_norm1 = self.norm1(x2)
         h = self.attn(x2_norm1)
-        x2 = x2_norm1 + h 
+        x2 = x2_norm1 + h
 
-        # MLP sub-block
+        #  # MLP sub-block
         x2_norm2 = self.norm2(x2)
-        h2 = self.mlp(x2_norm2) 
-        x2 = x2_norm2 + h2 
+        h2 = self.mlp(x2_norm2)
+        x2 = x2_norm2 + h2
 
         x_out = self.post_proj(x2)
+        #  x_out = self.norm3(x_out)
         return x_out

@@ -82,6 +82,8 @@ class CVNDataset(Dataset):
             raise RuntimeError(f"No .gz files found under {root}/<flavor>/event*.gz")
 
     def __len__(self):
+        #  if (len(self.entries) % 64 != 0):
+        #      return len(self.entries) - (len(self.entries) % 64)
         return len(self.entries)
 
     def _read_array(self, gz_path):

@@ -29,9 +29,11 @@ def compute_valid_patches_from_crops(
         valid: (B, N_patches) bool tensor: True = patch has enough non-zero pixels.
     """
     B, C, H, W = crops.shape
+    crops2 = crops.detach()
 
     # Binary map of "non-zero pixels" (any channel exceeds eps in abs value)
-    nonzero = (crops.abs() > eps).any(dim=1, keepdim=True).float()  # (B, 1, H, W)
+    # percentage based : 2% worked for ViT backbone
+    nonzero = (crops2.abs() > eps).any(dim=1, keepdim=True).float()  # (B, 1, H, W)
 
     # Average occupancy per patch using avg_pool2d
     occ = F.avg_pool2d(
@@ -44,6 +46,7 @@ def compute_valid_patches_from_crops(
     occ = occ.view(B, -1)
 
     # Threshold
+    # percentage based : 2% worked for ViT backbone
     valid = occ >= min_nonzero_frac  # (B, N_patches) bool
     return valid
 
@@ -55,7 +58,10 @@ def collate_data_and_cast(samples_list, mask_ratio_tuple, mask_probability, patc
 
     collated_global_crops = torch.stack([s[0]["global_crops"][i] for i in range(n_global_crops) for s in samples_list])
 
-    collated_local_crops = torch.stack([s[0]["local_crops"][i] for i in range(n_local_crops) for s in samples_list])
+    collated_local_crops = None
+    if n_local_crops > 0:
+        collated_local_crops = torch.stack([s[0]["local_crops"][i] for i in range(n_local_crops) for s in samples_list])
+        collated_local_crops = collated_local_crops.to(dtype)
 
     B = len(collated_global_crops)
     N = n_tokens
@@ -70,7 +76,8 @@ def collate_data_and_cast(samples_list, mask_ratio_tuple, mask_probability, patc
             collated_global_crops,
             n_tokens=N,
             patch_size=patch_size,
-            min_nonzero_frac=0.02,  # <- tune this threshold
+            #  min_nonzero_frac=0.02,  # <- tune this threshold (worked for ViT)
+            min_nonzero_frac=0.01,  # <- tune this threshold (warp conv)
             eps=0.0,
         )  # (B, N) bool
 
@@ -101,13 +108,13 @@ def collate_data_and_cast(samples_list, mask_ratio_tuple, mask_probability, patc
         valid_patches = valid_patches.to(collated_masks.device)
         collated_masks = collated_masks & valid_patches  # (B, N) bool
 
-        #  # OPTIONAL: ensure each sample has at least one masked patch
-        #  # (otherwise some rows could be all-False for very sparse images)
-        #  for b in range(B):
-        #      if not collated_masks[b].any():
-        #          # fallback: mask the most "occupied" patch
-        #          idx = valid_patches[b].float().argmax()
-        #          collated_masks[b, idx] = True
+    #      #  # OPTIONAL: ensure each sample has at least one masked patch
+    #      #  # (otherwise some rows could be all-False for very sparse images)
+    #      #  for b in range(B):
+    #      #      if not collated_masks[b].any():
+    #      #          # fallback: mask the most "occupied" patch
+    #      #          idx = valid_patches[b].float().argmax()
+    #      #          collated_masks[b, idx] = True
 
     # Recompute indices and weights AFTER filtering
 
@@ -116,7 +123,7 @@ def collate_data_and_cast(samples_list, mask_ratio_tuple, mask_probability, patc
 
     return {
         "collated_global_crops": collated_global_crops.to(dtype),
-        "collated_local_crops": collated_local_crops.to(dtype),
+        "collated_local_crops": collated_local_crops,
         "collated_masks": collated_masks,
         "mask_indices_list": mask_indices_list,
         "masks_weight": masks_weight,

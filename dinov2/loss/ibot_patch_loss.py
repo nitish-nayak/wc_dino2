@@ -101,13 +101,6 @@ class iBOTPatchLoss(nn.Module):
         s = student_patch_tokens
         loss = torch.sum(t * F.log_softmax(s / self.student_temp, dim=-1), dim=-1)
         loss = torch.sum(loss * student_masks_flat.float(), dim=-1) / student_masks_flat.sum(dim=-1).clamp(min=1.0)
-        if math.isnan(loss.mean()):
-            print("iBOTPatchLoss\n=====================")
-            print("Teacher path tokens : ", t)
-            print("Student path tokens : ", s)
-            print("student masks flat : ", student_masks_flat, student_masks_flat.float())
-            print("Misc : ", self.student_temp, self.center, self.updated)
-            print("=====================")
         return -loss.mean()
 
     def forward_masked(
@@ -122,6 +115,16 @@ class iBOTPatchLoss(nn.Module):
         s = student_patch_tokens_masked
         # loss = torch.sum(t * F.log_softmax(s / self.student_temp, dim=-1), dim=-1)
         loss = lossfunc(t, s, self.student_temp)
+        # extra metrics (decomposing existing loss func)
+        logt = torch.log(t.detach())
+        logs = F.log_softmax(s/self.student_temp, dim=-1)
+        s_prob = F.softmax(s/self.student_temp, dim=-1)
+
+        t_entropy = -(logt * t).sum(dim=-1)
+        kl_t = (-loss - t_entropy)
+        s_entropy = -(logs * s_prob).sum(dim=-1)
+        kl_s = (-loss - s_entropy)
+
         if masks_weight is None:
             masks_weight = (
                 (1 / student_masks_flat.sum(-1).clamp(min=1.0))
@@ -130,8 +133,22 @@ class iBOTPatchLoss(nn.Module):
             )
         if n_masked_patches is not None:
             loss = loss[:n_masked_patches]
+            t_entropy = t_entropy[:n_masked_patches]
+            s_entropy = s_entropy[:n_masked_patches]
+            kl_t = kl_t[:n_masked_patches]
+            kl_s = kl_s[:n_masked_patches]
+
         loss = loss * masks_weight
-        return -loss.sum() / student_masks_flat.shape[0]
+        t_entropy = t_entropy * masks_weight
+        s_entropy = s_entropy * masks_weight
+        kl_t = kl_t * masks_weight
+        kl_s = kl_s * masks_weight
+        return {"ibot" : -loss.sum() / student_masks_flat.shape[0],
+                "t_entropy" : t_entropy.sum() / student_masks_flat.shape[0],
+                "s_entropy" : s_entropy.sum() / student_masks_flat.shape[0],
+                "kl_t" : kl_t.sum() / student_masks_flat.shape[0],
+                "kl_s" : kl_s.sum() / student_masks_flat.shape[0]
+                }
 
     @torch.no_grad()
     def update_center(self, teacher_patch_tokens):

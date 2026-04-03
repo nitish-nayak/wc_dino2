@@ -8,6 +8,7 @@ import logging
 import math
 import os
 from functools import partial
+import types
 
 from fvcore.common.checkpoint import PeriodicCheckpointer
 import torch
@@ -16,7 +17,7 @@ from dinov2.data import SamplerType, make_data_loader, make_dataset
 from dinov2.data import collate_data_and_cast, DataAugmentationDINO, MaskingGenerator
 import dinov2.distributed as distributed
 from dinov2.fsdp import FSDPCheckpointer, rankstr
-from dinov2.logging import MetricLogger
+from dinov2.logging import MetricLogger, DINODebugger
 from dinov2.utils.config import setup
 from dinov2.utils.utils import CosineScheduler
 
@@ -164,7 +165,7 @@ def do_train(cfg, model, resume=False, grad_monitor=None, writer=None):
         checkpointer,
         period=2 * OFFICIAL_EPOCH_LENGTH,
         max_iter=max_iter,
-        max_to_keep=3,
+        max_to_keep=20,
     )
 
     # setup data preprocessing
@@ -269,7 +270,10 @@ def do_train(cfg, model, resume=False, grad_monitor=None, writer=None):
         # compute losses
 
         optimizer.zero_grad(set_to_none=True)
-        loss_dict = model.forward_backward(data, teacher_temp=teacher_temp)
+        loss_dict = model.forward_backward(data, teacher_temp=teacher_temp, iteration=iteration)
+        if model.debugger is not None:
+            epoch_debug = iteration // (model.debugger.save_every)
+            model.debugger.maybe_save_histories(iteration, epoch_debug)
 
         if iteration % 100 == 0:
             grad_monitor.record(model.student["backbone"], step=iteration)
@@ -369,6 +373,10 @@ def main(args):
             r"final\.cls_head",
             r"bottleneck\.attn",
             r"conv0",
+            r"conv1",
+            r"conv2",
+            r"convtr5",
+            r"convtr7",
             r"block1",
             r"block2",
             r"block6",
@@ -377,7 +385,15 @@ def main(args):
         max_points = 10000
     )
 
-    model = SSLMetaArch(cfg).to(torch.device("cuda"))
+    debug_cfg = {
+        "debug" : True,
+        "debug_every" : 100,
+        "save_every" : 2000,
+        "debug_dir" : f"{cfg.train.output_dir}/debug"
+    }
+    debug_cfg = types.SimpleNamespace(**debug_cfg)
+
+    model = SSLMetaArch(cfg, debug_cfg).to(torch.device("cuda"))
     model.prepare_for_distributed_training()
     #  grad_monitor.attach(model.student["backbone"])
     #  print("DEBUG ::: ")
