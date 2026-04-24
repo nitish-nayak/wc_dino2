@@ -415,7 +415,7 @@ def convert_loss_histories(loss_json_path):
 
 def main():
 
-    json_path = "/nfs/data/1/nitish/dino_output/cvn_minkunet_trywarp2/debug/histories_epoch024.json"
+    json_path = "/nfs/data/1/nitish/dino_output/cvn_minkunet_trywarp2/debug/histories_epoch019.json"
     loss_json_path = "/nfs/data/1/nitish/dino_output/cvn_minkunet_trywarp2/training_metrics.json"
     out_dir = "/nfs/data/1/nitish/dino_output/cvn_minkunet_trywarp2/plots"
 

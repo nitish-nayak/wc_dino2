@@ -86,8 +86,8 @@ student:
 teacher:
   momentum_teacher: 0.996
   final_momentum_teacher: 1
-  warmup_teacher_temp: 0.02
-  teacher_temp: 0.02
+  warmup_teacher_temp: 0.04
+  teacher_temp: 0.04
   warmup_teacher_temp_epochs: 30
 optim:
   epochs: 100
